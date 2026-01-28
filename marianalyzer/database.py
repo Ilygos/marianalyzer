@@ -11,6 +11,9 @@ from marianalyzer.models import (
     Chunk,
     Document,
     Heading,
+    Pattern,
+    PatternFamily,
+    PatternFamilyMember,
     Requirement,
     RequirementFamily,
     RequirementFamilyMember,
@@ -108,6 +111,57 @@ CREATE TABLE IF NOT EXISTS req_family_members (
 
 CREATE INDEX IF NOT EXISTS idx_req_family_members_family ON req_family_members(family_id);
 CREATE INDEX IF NOT EXISTS idx_req_family_members_requirement ON req_family_members(requirement_id);
+
+-- patterns: Generic pattern extraction (success, failure, risk, etc.)
+CREATE TABLE IF NOT EXISTS patterns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chunk_id INTEGER NOT NULL,
+    pattern_type TEXT NOT NULL,
+    pattern_text TEXT NOT NULL,
+    pattern_norm TEXT NOT NULL,
+    category TEXT,
+    severity TEXT,
+    modality TEXT,
+    topic TEXT,
+    entities TEXT,
+    confidence REAL NOT NULL,
+    metadata TEXT,
+    extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (chunk_id) REFERENCES chunks(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_patterns_chunk_id ON patterns(chunk_id);
+CREATE INDEX IF NOT EXISTS idx_patterns_type ON patterns(pattern_type);
+CREATE INDEX IF NOT EXISTS idx_patterns_confidence ON patterns(confidence);
+CREATE INDEX IF NOT EXISTS idx_patterns_category ON patterns(category);
+
+-- pattern_families: Clustered pattern groups
+CREATE TABLE IF NOT EXISTS pattern_families (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern_type TEXT NOT NULL,
+    canonical_text TEXT NOT NULL,
+    member_count INTEGER NOT NULL,
+    doc_count INTEGER NOT NULL,
+    average_confidence REAL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_pattern_families_type ON pattern_families(pattern_type);
+CREATE INDEX IF NOT EXISTS idx_pattern_families_doc_count ON pattern_families(doc_count DESC);
+
+-- pattern_family_members: Many-to-many relationship
+CREATE TABLE IF NOT EXISTS pattern_family_members (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    family_id INTEGER NOT NULL,
+    pattern_id INTEGER NOT NULL,
+    similarity_score REAL,
+    FOREIGN KEY (family_id) REFERENCES pattern_families(id) ON DELETE CASCADE,
+    FOREIGN KEY (pattern_id) REFERENCES patterns(id) ON DELETE CASCADE,
+    UNIQUE(family_id, pattern_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pattern_family_members_family ON pattern_family_members(family_id);
+CREATE INDEX IF NOT EXISTS idx_pattern_family_members_pattern ON pattern_family_members(pattern_id);
 """
 
 
@@ -450,4 +504,196 @@ class Database:
             raise RuntimeError("Database not connected")
 
         cursor = self.conn.execute("SELECT COUNT(*) FROM req_families")
+        return cursor.fetchone()[0]
+
+    # Pattern operations (generic for all pattern types)
+    def insert_pattern(self, pattern: Pattern) -> int:
+        """Insert a pattern and return its ID."""
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+
+        entities_json = json.dumps(pattern.entities) if pattern.entities else None
+        metadata_json = json.dumps(pattern.metadata) if pattern.metadata else None
+
+        cursor = self.conn.execute(
+            """
+            INSERT INTO patterns (
+                chunk_id, pattern_type, pattern_text, pattern_norm,
+                category, severity, modality, topic, entities, confidence, metadata
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                pattern.chunk_id,
+                pattern.pattern_type,
+                pattern.pattern_text,
+                pattern.pattern_norm,
+                pattern.category,
+                pattern.severity,
+                pattern.modality,
+                pattern.topic,
+                entities_json,
+                pattern.confidence,
+                metadata_json,
+            ),
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_patterns_by_type(self, pattern_type: str) -> list[Pattern]:
+        """Get all patterns of a specific type."""
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+
+        cursor = self.conn.execute(
+            "SELECT * FROM patterns WHERE pattern_type = ? ORDER BY id",
+            (pattern_type,),
+        )
+        rows = cursor.fetchall()
+
+        return [
+            Pattern(
+                id=row["id"],
+                chunk_id=row["chunk_id"],
+                pattern_type=row["pattern_type"],
+                pattern_text=row["pattern_text"],
+                pattern_norm=row["pattern_norm"],
+                category=row["category"],
+                severity=row["severity"],
+                modality=row["modality"],
+                topic=row["topic"],
+                entities=json.loads(row["entities"]) if row["entities"] else None,
+                confidence=row["confidence"],
+                metadata=json.loads(row["metadata"]) if row["metadata"] else None,
+                extracted_at=datetime.fromisoformat(row["extracted_at"]) if row["extracted_at"] else None,
+            )
+            for row in rows
+        ]
+
+    def get_all_patterns(self) -> list[Pattern]:
+        """Get all patterns."""
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+
+        cursor = self.conn.execute("SELECT * FROM patterns ORDER BY id")
+        rows = cursor.fetchall()
+
+        return [
+            Pattern(
+                id=row["id"],
+                chunk_id=row["chunk_id"],
+                pattern_type=row["pattern_type"],
+                pattern_text=row["pattern_text"],
+                pattern_norm=row["pattern_norm"],
+                category=row["category"],
+                severity=row["severity"],
+                modality=row["modality"],
+                topic=row["topic"],
+                entities=json.loads(row["entities"]) if row["entities"] else None,
+                confidence=row["confidence"],
+                metadata=json.loads(row["metadata"]) if row["metadata"] else None,
+                extracted_at=datetime.fromisoformat(row["extracted_at"]) if row["extracted_at"] else None,
+            )
+            for row in rows
+        ]
+
+    def count_patterns(self, pattern_type: Optional[str] = None) -> int:
+        """Count patterns, optionally filtered by type."""
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+
+        if pattern_type:
+            cursor = self.conn.execute(
+                "SELECT COUNT(*) FROM patterns WHERE pattern_type = ?",
+                (pattern_type,),
+            )
+        else:
+            cursor = self.conn.execute("SELECT COUNT(*) FROM patterns")
+
+        return cursor.fetchone()[0]
+
+    # Pattern family operations
+    def insert_pattern_family(self, family: PatternFamily) -> int:
+        """Insert a pattern family and return its ID."""
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+
+        cursor = self.conn.execute(
+            """
+            INSERT INTO pattern_families (
+                pattern_type, canonical_text, member_count, doc_count, average_confidence
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                family.pattern_type,
+                family.canonical_text,
+                family.member_count,
+                family.doc_count,
+                family.average_confidence,
+            ),
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def insert_pattern_family_members(self, members: list[PatternFamilyMember]) -> None:
+        """Insert pattern family members."""
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+
+        member_data = [(m.family_id, m.pattern_id, m.similarity_score) for m in members]
+
+        self.conn.executemany(
+            """
+            INSERT INTO pattern_family_members (family_id, pattern_id, similarity_score)
+            VALUES (?, ?, ?)
+            """,
+            member_data,
+        )
+        self.conn.commit()
+
+    def get_top_pattern_families(
+        self, pattern_type: str, limit: int = 20
+    ) -> list[PatternFamily]:
+        """Get top pattern families by document count."""
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+
+        cursor = self.conn.execute(
+            """
+            SELECT * FROM pattern_families
+            WHERE pattern_type = ?
+            ORDER BY doc_count DESC, member_count DESC
+            LIMIT ?
+            """,
+            (pattern_type, limit),
+        )
+        rows = cursor.fetchall()
+
+        return [
+            PatternFamily(
+                id=row["id"],
+                pattern_type=row["pattern_type"],
+                canonical_text=row["canonical_text"],
+                member_count=row["member_count"],
+                doc_count=row["doc_count"],
+                average_confidence=row["average_confidence"],
+                created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+            )
+            for row in rows
+        ]
+
+    def count_pattern_families(self, pattern_type: Optional[str] = None) -> int:
+        """Count pattern families, optionally filtered by type."""
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+
+        if pattern_type:
+            cursor = self.conn.execute(
+                "SELECT COUNT(*) FROM pattern_families WHERE pattern_type = ?",
+                (pattern_type,),
+            )
+        else:
+            cursor = self.conn.execute("SELECT COUNT(*) FROM pattern_families")
+
         return cursor.fetchone()[0]

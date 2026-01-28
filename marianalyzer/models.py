@@ -137,6 +137,45 @@ class ExtractionResult(BaseModel):
     confidence: float = 0.0
 
 
+class Pattern(BaseModel):
+    """Generic pattern extracted from documents (requirements, success points, risks, etc.)."""
+
+    id: Optional[int] = None
+    chunk_id: int
+    pattern_type: str  # 'requirement', 'success_point', 'failure_point', 'risk', 'constraint'
+    pattern_text: str
+    pattern_norm: str  # Normalized for clustering
+    category: Optional[str] = None  # Type-specific categorization
+    severity: Optional[str] = None  # For risks/failures: 'high', 'medium', 'low'
+    modality: Optional[str] = None  # For requirements: 'must', 'should', 'may'
+    topic: Optional[str] = None
+    entities: Optional[list[str]] = None
+    confidence: float
+    metadata: Optional[dict[str, Any]] = None
+    extracted_at: Optional[datetime] = None
+
+
+class PatternFamily(BaseModel):
+    """Represents a cluster of similar patterns."""
+
+    id: Optional[int] = None
+    pattern_type: str
+    canonical_text: str
+    member_count: int
+    doc_count: int
+    average_confidence: Optional[float] = None
+    created_at: Optional[datetime] = None
+
+
+class PatternFamilyMember(BaseModel):
+    """Links a pattern to its family."""
+
+    id: Optional[int] = None
+    family_id: int
+    pattern_id: int
+    similarity_score: Optional[float] = None
+
+
 class QueryResponse(BaseModel):
     """Structured response to a user query."""
 

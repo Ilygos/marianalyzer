@@ -98,29 +98,81 @@ def build_index():
 def extract(
     pattern: str = typer.Argument(
         "requirements",
-        help="Pattern to extract (requirements, risks, etc.)",
+        help="Pattern to extract: requirements, success_points, failure_points, risks, constraints, all",
+    ),
+    confidence: float = typer.Option(
+        None,
+        "--confidence",
+        "-c",
+        help="Minimum confidence threshold (0.0-1.0)",
     ),
 ):
-    """Extract patterns (requirements, etc.) from documents."""
+    """Extract patterns from documents.
+
+    Pattern types:
+    - requirements: Must/shall/should statements
+    - success_points: Achievements, completions, proven capabilities
+    - failure_points: Issues, gaps, weaknesses, concerns
+    - risks: Potential future problems or threats
+    - constraints: Limitations, restrictions, boundaries
+    - all: Extract all pattern types
+    """
+    from marianalyzer.extraction.pattern_extractor import extract_patterns, extract_all_pattern_types
     from marianalyzer.extraction.requirement_extractor import extract_requirements
 
     config = get_config()
     setup_logging(config.log_file, config.log_level)
 
-    if pattern != "requirements":
-        console.print(f"[red]Unknown pattern: {pattern}[/red]")
-        console.print("Currently only 'requirements' is supported")
-        raise typer.Exit(1)
+    valid_patterns = ["requirements", "success_points", "failure_points", "risks", "constraints", "all"]
 
-    console.print("[bold blue]Extracting requirements...[/bold blue]")
+    if pattern not in valid_patterns:
+        console.print(f"[red]Unknown pattern: {pattern}[/red]")
+        console.print(f"Valid patterns: {', '.join(valid_patterns)}")
+        raise typer.Exit(1)
 
     db = get_db()
     try:
-        stats = extract_requirements(db, config)
+        if pattern == "all":
+            console.print("[bold blue]Extracting all pattern types...[/bold blue]\n")
 
-        console.print(f"\n[bold green]Extraction Complete![/bold green]")
-        console.print(f"Requirements extracted: {stats['extracted']}")
-        console.print(f"Chunks processed: {stats['chunks_processed']}")
+            # Extract requirements first (legacy table)
+            console.print("[cyan]Extracting requirements...[/cyan]")
+            req_stats = extract_requirements(db, config)
+            console.print(
+                f"[green]Requirements: {req_stats['extracted']} extracted[/green]\n"
+            )
+
+            # Extract all new pattern types
+            pattern_types = ["success_points", "failure_points", "risks", "constraints"]
+            for pt in pattern_types:
+                console.print(f"[cyan]Extracting {pt}...[/cyan]")
+                stats = extract_patterns(db, config, pt, confidence)
+                console.print(
+                    f"[green]{pt.replace('_', ' ').title()}: {stats['extracted']} extracted[/green]\n"
+                )
+
+            console.print(f"[bold green]All extractions complete![/bold green]")
+
+        elif pattern == "requirements":
+            console.print("[bold blue]Extracting requirements...[/bold blue]")
+            stats = extract_requirements(db, config)
+
+            console.print(f"\n[bold green]Extraction Complete![/bold green]")
+            console.print(f"Requirements extracted: {stats['extracted']}")
+            console.print(f"Chunks processed: {stats['chunks_processed']}")
+
+        else:
+            # New pattern types
+            pattern_name = pattern.replace("_", " ").title()
+            console.print(f"[bold blue]Extracting {pattern_name}...[/bold blue]")
+
+            stats = extract_patterns(db, config, pattern, confidence)
+
+            console.print(f"\n[bold green]Extraction Complete![/bold green]")
+            console.print(f"{pattern_name} extracted: {stats['extracted']}")
+            console.print(f"Chunks processed: {stats['chunks_processed']}")
+            if stats.get('skipped'):
+                console.print(f"Skipped (no keywords): {stats['skipped']}")
 
     finally:
         db.close()
@@ -161,10 +213,37 @@ def ask(
         "--top-k",
         help="Number of results to return",
     ),
+    pattern_type: Optional[str] = typer.Option(
+        None,
+        "--pattern-type",
+        "-p",
+        help="Specific pattern type: success, failure, risk, constraint, requirement",
+    ),
 ):
-    """Ask a question and get a structured answer with citations."""
+    """Ask a question and get a structured answer.
+
+    The system automatically detects question type and provides relevant answers:
+    - Questions about successes, achievements, strengths → Success points
+    - Questions about failures, issues, problems → Failure points
+    - Questions about risks, threats, vulnerabilities → Risks
+    - Questions about constraints, limitations → Constraints
+    - Questions about requirements → Requirements
+    - Comparative questions → Distribution analysis
+    - General questions → Full document search
+
+    Examples:
+        marianalyzer ask "What are the main success points?"
+        marianalyzer ask "What risks have been identified?"
+        marianalyzer ask "Compare successes and failures"
+        marianalyzer ask "What are the top requirements?"
+    """
     import json
 
+    from marianalyzer.qa.pattern_qa import (
+        answer_comparative_question,
+        answer_pattern_question,
+        is_comparative_question,
+    )
     from marianalyzer.qa.answer_engine import answer_question
 
     config = get_config()
@@ -172,7 +251,19 @@ def ask(
 
     db = get_db()
     try:
-        response = answer_question(question, db, config, top_k=top_k)
+        # Determine question type and route to appropriate handler
+        if is_comparative_question(question):
+            response = answer_comparative_question(question, db, config)
+        elif pattern_type or any(
+            kw in question.lower()
+            for kw in ["success", "failure", "risk", "constraint", "requirement"]
+        ):
+            response = answer_pattern_question(
+                question, db, config, pattern_type=pattern_type, top_k=top_k
+            )
+        else:
+            # Fall back to general QA
+            response = answer_question(question, db, config, top_k=top_k)
 
         if json_output:
             console.print(json.dumps(response.model_dump(), indent=2))
@@ -181,10 +272,22 @@ def ask(
             console.print(f"\n[bold green]Answer:[/bold green]\n{response.answer}")
 
             if response.evidence:
-                console.print(f"\n[bold yellow]Evidence ({len(response.evidence)} sources):[/bold yellow]")
+                console.print(
+                    f"\n[bold yellow]Evidence ({len(response.evidence)} sources):[/bold yellow]"
+                )
                 for i, ev in enumerate(response.evidence[:10], 1):
-                    console.print(f"\n{i}. [dim]{ev.get('citation', 'N/A')}[/dim]")
-                    console.print(f"   {ev.get('chunk_text', '')[:200]}...")
+                    if "citation" in ev:
+                        console.print(f"\n{i}. [dim]{ev.get('citation', 'N/A')}[/dim]")
+                        console.print(f"   {ev.get('chunk_text', '')[:200]}...")
+                    elif "pattern_text" in ev:
+                        console.print(f"\n{i}. {ev.get('pattern_text', '')[:150]}...")
+                        if ev.get("confidence"):
+                            console.print(f"   [dim]Confidence: {ev['confidence']:.2f}[/dim]")
+                    elif "pattern_type" in ev:
+                        console.print(
+                            f"\n{i}. {ev['pattern_type']}: {ev.get('count', 0)} "
+                            f"({ev.get('percentage', 0):.1f}%)"
+                        )
 
     finally:
         db.close()
@@ -204,14 +307,29 @@ def status():
         req_count = db.count_requirements()
         family_count = db.count_families()
 
+        # Get pattern counts
+        success_count = db.count_patterns("success_point")
+        failure_count = db.count_patterns("failure_point")
+        risk_count = db.count_patterns("risk")
+        constraint_count = db.count_patterns("constraint")
+        total_patterns = db.count_patterns()
+
         # Create stats table
-        table = Table(title="RFP RAG Status")
+        table = Table(title="Document Analyzer Status")
         table.add_column("Metric", style="cyan")
         table.add_column("Count", style="green", justify="right")
 
         table.add_row("Documents", str(doc_count))
         table.add_row("Chunks", str(chunk_count))
-        table.add_row("Requirements", str(req_count))
+        table.add_row("", "")  # Separator
+        table.add_row("[bold]Extracted Patterns", "[bold]")
+        table.add_row("  Requirements (legacy)", str(req_count))
+        table.add_row("  Success Points", str(success_count))
+        table.add_row("  Failure Points", str(failure_count))
+        table.add_row("  Risks", str(risk_count))
+        table.add_row("  Constraints", str(constraint_count))
+        table.add_row("  [bold]Total Patterns", f"[bold]{total_patterns}")
+        table.add_row("", "")  # Separator
         table.add_row("Requirement Families", str(family_count))
 
         console.print(table)
@@ -261,6 +379,83 @@ def list_families(
             )
 
         console.print(table)
+
+    finally:
+        db.close()
+
+
+@app.command(name="list-patterns")
+def list_patterns(
+    pattern_type: str = typer.Argument(
+        ...,
+        help="Pattern type: success_points, failure_points, risks, constraints",
+    ),
+    limit: int = typer.Option(
+        50,
+        "--limit",
+        "-n",
+        help="Maximum number of patterns to show",
+    ),
+    min_confidence: float = typer.Option(
+        0.0,
+        "--min-confidence",
+        "-c",
+        help="Minimum confidence threshold (0.0-1.0)",
+    ),
+):
+    """List extracted patterns of a specific type."""
+    config = get_config()
+    setup_logging(config.log_file, config.log_level)
+
+    valid_types = ["success_points", "failure_points", "risks", "constraints"]
+    if pattern_type not in valid_types:
+        console.print(f"[red]Invalid pattern type: {pattern_type}[/red]")
+        console.print(f"Valid types: {', '.join(valid_types)}")
+        raise typer.Exit(1)
+
+    db = get_db()
+    try:
+        patterns = db.get_patterns_by_type(pattern_type)
+
+        if not patterns:
+            console.print(
+                f"[yellow]No {pattern_type} found. Run 'extract {pattern_type}' first.[/yellow]"
+            )
+            return
+
+        # Filter by confidence
+        if min_confidence > 0:
+            patterns = [p for p in patterns if p.confidence >= min_confidence]
+
+        # Limit results
+        patterns = patterns[:limit]
+
+        # Create table
+        pattern_name = pattern_type.replace("_", " ").title()
+        table = Table(title=f"{pattern_name} ({len(patterns)} shown)")
+        table.add_column("#", style="cyan", justify="right", width=4)
+        table.add_column("Pattern Text", style="white", width=60)
+        table.add_column("Category", style="yellow", width=12)
+        table.add_column("Confidence", style="green", justify="right", width=10)
+
+        for i, pattern in enumerate(patterns, 1):
+            text = pattern.pattern_text[:57] + "..." if len(pattern.pattern_text) > 60 else pattern.pattern_text
+            category = pattern.category or "-"
+            conf_color = "green" if pattern.confidence >= 0.8 else "yellow" if pattern.confidence >= 0.6 else "red"
+
+            table.add_row(
+                str(i),
+                text,
+                category,
+                f"[{conf_color}]{pattern.confidence:.2f}[/{conf_color}]",
+            )
+
+        console.print(table)
+
+        # Summary stats
+        if patterns:
+            avg_conf = sum(p.confidence for p in patterns) / len(patterns)
+            console.print(f"\n[dim]Average confidence: {avg_conf:.2f}[/dim]")
 
     finally:
         db.close()
