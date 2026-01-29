@@ -17,7 +17,7 @@ RUN ollama serve & \
     SERVER_PID=$! && \
     sleep 5 && \
     ollama pull qwen2.5:7b-instruct && \
-    ollama pull nomic-embed-text && \
+    ollama pull mxbai-embed-large:latest && \
     kill $SERVER_PID && \
     wait $SERVER_PID || true
 

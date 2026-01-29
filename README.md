@@ -58,7 +58,7 @@ cp .env.example .env
 5. Pull required Ollama models:
 ```bash
 ollama pull qwen2.5:7b-instruct
-ollama pull nomic-embed-text
+ollama pull mxbai-embed-large:latest
 ```
 
 ## GCP Deployment
@@ -218,7 +218,7 @@ CHROMA_PATH=~/.analyzer/data/chroma
 # Ollama settings
 OLLAMA_HOST=http://localhost:11434
 OLLAMA_LLM_MODEL=qwen2.5:7b-instruct
-OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+OLLAMA_EMBEDDING_MODEL=mxbai-embed-large:latest
 
 # LLM settings
 LLM_TEMPERATURE=0.1

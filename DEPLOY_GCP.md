@@ -184,7 +184,7 @@ gcloud run services update analyzer \
     GCS_BUCKET=your-bucket-name,
     USE_GCS=true,
     OLLAMA_LLM_MODEL=qwen2.5:7b-instruct,
-    OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+    OLLAMA_EMBEDDING_MODEL=mxbai-embed-large:latest
   "
 ```
 

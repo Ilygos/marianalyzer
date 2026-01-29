@@ -34,7 +34,7 @@ class Config(BaseSettings):
     # Ollama settings (local or Cloud Run)
     ollama_host: str = "http://localhost:11434"
     ollama_llm_model: str = "qwen2.5:7b-instruct"
-    ollama_embedding_model: str = "nomic-embed-text"
+    ollama_embedding_model: str = "mxbai-embed-large:latest"
 
     # LLM settings
     llm_temperature: float = 0.1
