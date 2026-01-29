@@ -1,25 +1,38 @@
-# Marianalyzer
+# Document Analyzer - MVP1
 
-Local RAG system for analyzing and extracting insights from documents using Ollama models. Supports PDF, DOCX, and XLSX files with intelligent requirement extraction and pattern clustering.
+Company-specific document analyzer that learns patterns from historical documents (RFP/call-for-offer decks and annexes) and exposes them via MCP tools to improve document generation quality.
 
 ## Features
 
-- **Multi-format support**: PDF, DOCX, XLSX documents
+- **Company Playbook**: Learn typical structure, recurring requirements, and terminology from historical documents
+- **Retrieval of Historical Exemplars**: Cite relevant examples from past documents
+- **Draft Validation**: Check drafts against company patterns and standards
+- **Quality Scoring**: Score drafts on structure, requirements coverage, terminology, and specificity
+- **MCP Integration**: Expose tools for seamless integration with document generators
 - **Local-first**: Runs entirely on your machine using Ollama
-- **Pattern extraction**: Automatically identifies key requirements and specifications
-- **Intelligent clustering**: Groups similar patterns and requirements across documents
-- **Structured Q&A**: Ask questions and get JSON responses with citations
-- **Citation tracking**: Every claim backed by file path + page/section/cell references
+
+## MVP-1 Scope
+
+**In scope:**
+- Company playbook (structure + recurring requirements + terminology)
+- Retrieval of historical exemplars (cited)
+- Draft validation + quality scoring
+- MCP tools for integration
+
+**Out of scope:**
+- Win/loss prediction
+- Outcome-based ranking
+- CRM integration
 
 ## Requirements
 
 - Python 3.10+
 - [Ollama](https://ollama.ai/) running locally
-- 8GB+ VRAM (Windows) or 32GB+ unified memory (macOS)
+- 8GB+ RAM recommended
 
 ## Installation
 
-1. Clone the repository:
+1. Clone the repository and navigate to the directory:
 ```bash
 cd document_analyzer
 ```
@@ -38,7 +51,7 @@ pip install -e .
 4. Set up environment:
 ```bash
 cp .env.example .env
-# Edit .env with your Ollama settings
+# Edit .env with your Ollama settings if needed
 ```
 
 5. Pull required Ollama models:
@@ -49,87 +62,230 @@ ollama pull nomic-embed-text
 
 ## Usage
 
-### 1. Ingest Documents
+### Quick Start - Complete Pipeline
+
+Process all documents for a company in one command:
 
 ```bash
-marianalyzer ingest ./my_documents
+analyzer process-all <company_id> <folder_path> [--doc-type offer_deck]
 ```
 
-Recursively scans and parses PDF, DOCX, and XLSX files.
+This runs all pipeline stages: ingest, index, extract, and build playbook.
 
-### 2. Build Indexes
+### Individual Pipeline Stages
+
+#### 1. Ingest Documents
 
 ```bash
-marianalyzer build-index
+analyzer ingest <company_id> <folder_path>
 ```
 
-Creates BM25 and vector indexes for hybrid search.
+Recursively scans and parses PDF, DOCX, and XLSX files. Supports incremental updates (only processes changed files).
 
-### 3. Extract Patterns
+Options:
+- `--force, -f`: Force re-ingestion of all files
+
+#### 2. Build Vector Index
 
 ```bash
-marianalyzer extract requirements
+analyzer build-index <company_id>
 ```
 
-Identifies and structures key requirements using LLM.
+Generates embeddings and builds ChromaDB index for semantic search.
 
-### 4. Aggregate Similar Patterns
+Options:
+- `--batch-size`: Number of chunks to embed at once (default: 50)
+
+#### 3. Extract Requirements
 
 ```bash
-marianalyzer aggregate
+analyzer extract <company_id>
 ```
 
-Clusters similar requirements into semantic families.
+Uses LLM to extract requirements and specifications from documents.
 
-### 5. Ask Questions
+#### 4. Build Playbook
 
 ```bash
-marianalyzer ask "What are the top 20 recurring requirements?" --json
+analyzer build-playbook <company_id> [--doc-type general]
 ```
 
-Get structured answers with citations.
+Aggregates patterns into a company playbook including:
+- Typical document outline
+- Required vs optional sections
+- Top recurring requirement families
+- Preferred terminology
 
-### Check Status
+Options:
+- `--doc-type`: Document type (e.g., "offer_deck", "rfp", "general")
+
+### MCP Server
+
+Start the MCP server to expose tools:
 
 ```bash
-marianalyzer status
+analyzer serve-mcp
 ```
 
-View system statistics and database counts.
+#### Available MCP Tools
+
+1. **get_company_playbook**
+   - Returns typical outline, requirement families, and glossary
+   - Parameters: `company_id`, `doc_type`
+
+2. **retrieve_company_examples**
+   - Returns cited snippets from historical documents
+   - Parameters: `company_id`, `query`, `k` (number of results)
+
+3. **validate_draft**
+   - Returns validation issues with severity and recommended fixes
+   - Parameters: `company_id`, `doc_type`, `draft_text`
+
+4. **score_draft**
+   - Returns quality scores and missing elements
+   - Parameters: `company_id`, `doc_type`, `draft_text`
+
+### Configuration
+
+View current configuration:
+
+```bash
+analyzer config
+```
+
+Configuration can be set via environment variables or `.env` file:
+
+```bash
+# Paths
+DATA_DIR=~/.analyzer/data
+DB_PATH=~/.analyzer/data/analyzer.db
+CHROMA_PATH=~/.analyzer/data/chroma
+
+# Ollama settings
+OLLAMA_HOST=http://localhost:11434
+OLLAMA_LLM_MODEL=qwen2.5:7b-instruct
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+
+# LLM settings
+LLM_TEMPERATURE=0.1
+LLM_MAX_TOKENS=4096
+
+# Chunk settings
+MAX_CHUNK_SIZE=2000
+CHUNK_OVERLAP=200
+
+# Retrieval settings
+DEFAULT_TOP_K=5
+SIMILARITY_THRESHOLD=0.7
+
+# Playbook settings
+MIN_SECTION_FREQUENCY=0.3
+REQUIRED_SECTION_THRESHOLD=0.8
+```
 
 ## Architecture
 
+### Data Flow
+
 ```
-Ingest → Parse → Chunk → Index → Extract → Aggregate → Q&A
+Documents → Ingest → Chunks + Headings → Index (Vector DB)
+                                       ↓
+                                 Extract Requirements
+                                       ↓
+                              Cluster into Families
+                                       ↓
+                                 Build Playbook
+                                       ↓
+                         MCP Tools (validate/score/retrieve)
 ```
 
-- **Ingest**: Recursive folder scanning with deduplication
-- **Parse**: Format-specific parsers (PDF/DOCX/XLSX)
-- **Chunk**: Sentence-based chunking with overlap
-- **Index**: Hybrid BM25 + vector search
-- **Extract**: LLM-based pattern and requirement extraction
-- **Aggregate**: Semantic clustering and family generation
-- **Q&A**: Retrieval-augmented generation with precise citations
+### Components
+
+1. **Ingestor**: Recursively scans folders, detects file types, computes hashes for incremental updates
+2. **Parsers**: DOCX (headings/paragraphs/tables), XLSX (sheets/ranges), PDF (pages/text)
+3. **Chunk Store**: Canonical chunk representation with locators (SQLite)
+4. **Index Layer**: Vector index (ChromaDB) for semantic search
+5. **Extraction Pipeline**: LLM-assisted requirement extraction with JSON schema validation
+6. **Playbook Builder**: Aggregates headings/requirements into company playbook
+7. **Validator + Scorer**: Deterministic and playbook-based checks
+8. **MCP Gateway**: Secure interface for document generators
+
+### Data Model
+
+**SQLite Tables:**
+- `documents`: Document metadata with hash for change detection
+- `chunks`: Canonical chunks with structure paths and locators
+- `headings`: Extracted headings with levels
+- `requirements`: Extracted requirements with modality and topic
+- `req_families`: Clustered requirement families
+- `req_family_members`: Requirement-to-family mapping
+- `glossary`: Preferred terminology
+- `playbook`: Company playbooks by doc_type
+
+**ChromaDB Collections:**
+- `chunks_<company_id>`: Vector embeddings for semantic search
 
 ## Project Structure
 
 ```
-marianalyzer/
+src/analyzer/
 ├── cli.py              # CLI commands and entry points
 ├── config.py           # Configuration management
-├── database.py         # SQLite database operations
-├── ingest/             # Document ingestion pipeline
-├── parsers/            # PDF, DOCX, XLSX parsers
-├── chunking/           # Intelligent text chunking
-├── indexing/           # BM25 + ChromaDB vector search
-├── llm/                # Ollama LLM & embedding integration
-├── extraction/         # Pattern and requirement extraction
-├── aggregation/        # Semantic clustering and grouping
-├── qa/                 # Question answering with RAG
-└── utils/              # Logging, citations, path utilities
+├── models/             # Pydantic data models
+│   ├── __init__.py
+│   └── base.py
+├── parsers/            # Document parsers
+│   ├── __init__.py
+│   ├── base.py
+│   ├── docx_parser.py
+│   ├── xlsx_parser.py
+│   └── pdf_parser.py
+├── store/              # Storage layer
+│   ├── __init__.py
+│   ├── sqlite_store.py
+│   └── chroma_store.py
+├── pipelines/          # Processing pipelines
+│   ├── __init__.py
+│   ├── ingest.py
+│   ├── index.py
+│   ├── extract.py
+│   └── aggregate.py
+├── playbook/           # Playbook building (future)
+├── validation/         # Draft validation and scoring
+│   ├── __init__.py
+│   ├── validator.py
+│   └── scorer.py
+├── mcp/                # MCP server
+│   ├── __init__.py
+│   └── server.py
+└── utils/              # Utilities
+    ├── __init__.py
+    ├── llm.py
+    └── text.py
+```
+
+## Example Workflow
+
+```bash
+# 1. Process a company's documents
+analyzer process-all acme ./acme_documents --doc-type offer_deck
+
+# 2. Start MCP server in one terminal
+analyzer serve-mcp
+
+# 3. In another terminal/application, use MCP tools to:
+#    - Get company playbook
+#    - Retrieve examples for inspiration
+#    - Validate draft documents
+#    - Score draft quality
 ```
 
 ## Development
+
+Install development dependencies:
+```bash
+pip install -e ".[dev]"
+```
 
 Run tests:
 ```bash
@@ -138,9 +294,24 @@ pytest tests/ -v
 
 Format code:
 ```bash
-black marianalyzer/
-ruff check marianalyzer/
+black src/
+ruff check src/
 ```
+
+Type checking:
+```bash
+mypy src/
+```
+
+## Next Steps (MVP-2)
+
+Future enhancements will include:
+- Outcome labels (won/lost)
+- Win/loss insights and "best vs worst" exemplars
+- Win-likeness scoring
+- More sophisticated requirement clustering
+- Glossary term extraction
+- Enhanced validation rules
 
 ## License
 
