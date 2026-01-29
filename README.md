@@ -10,6 +10,7 @@ Company-specific document analyzer that learns patterns from historical document
 - **Quality Scoring**: Score drafts on structure, requirements coverage, terminology, and specificity
 - **MCP Integration**: Expose tools for seamless integration with document generators
 - **Local-first**: Runs entirely on your machine using Ollama
+- **Cloud-ready**: Deploy to Google Cloud Run with GPU-accelerated Ollama
 
 ## MVP-1 Scope
 
@@ -58,6 +59,51 @@ cp .env.example .env
 ```bash
 ollama pull qwen2.5:7b-instruct
 ollama pull nomic-embed-text
+```
+
+## GCP Deployment
+
+Deploy to Google Cloud Run for production use with GPU-accelerated Ollama.
+
+### Quick Deploy
+
+```bash
+# 1. Setup GCP project
+./deploy/setup-gcp.sh
+
+# 2. Deploy Ollama service (with GPU)
+./deploy/deploy-ollama.sh
+
+# 3. Deploy Analyzer service
+./deploy/deploy-analyzer.sh
+```
+
+### Features
+
+- **GPU-Accelerated**: Ollama runs on NVIDIA L4 GPU for faster inference
+- **Auto-scaling**: Both services scale to zero when not in use
+- **IAM Authentication**: Secure service-to-service communication
+- **HTTP API**: MCP tools exposed via REST endpoints
+- **GCS Storage**: Optional Google Cloud Storage for documents
+
+See [DEPLOY_GCP.md](DEPLOY_GCP.md) for detailed deployment instructions, configuration, monitoring, and troubleshooting.
+
+### Testing Cloud Deployment
+
+```bash
+# Get service URL
+ANALYZER_URL=$(gcloud run services describe analyzer \
+  --region=us-central1 \
+  --format='value(status.url)')
+
+# Get auth token
+TOKEN=$(gcloud auth print-identity-token)
+
+# Test MCP tools
+curl -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"company_id":"acme","doc_type":"offer_deck"}' \
+  $ANALYZER_URL/tools/get_company_playbook
 ```
 
 ## Usage
@@ -123,9 +169,17 @@ Options:
 
 Start the MCP server to expose tools:
 
+**Local (stdio):**
 ```bash
 analyzer serve-mcp
 ```
+
+**HTTP API (for cloud deployments):**
+```bash
+python -m analyzer.mcp.server_http
+```
+
+The HTTP server exposes MCP tools as REST endpoints on port 8080 (or `$PORT`).
 
 #### Available MCP Tools
 
@@ -181,6 +235,14 @@ SIMILARITY_THRESHOLD=0.7
 # Playbook settings
 MIN_SECTION_FREQUENCY=0.3
 REQUIRED_SECTION_THRESHOLD=0.8
+
+# GCP settings (optional, for cloud deployment)
+GCP_PROJECT_ID=your-project-id
+GCP_REGION=us-central1
+GCS_BUCKET=your-bucket-name
+USE_GCS=false
+OLLAMA_SERVICE_URL=https://ollama-xxx.run.app
+USE_CLOUD_RUN_AUTH=false
 ```
 
 ## Architecture
@@ -285,6 +347,11 @@ analyzer serve-mcp
 Install development dependencies:
 ```bash
 pip install -e ".[dev]"
+```
+
+Install with GCP support:
+```bash
+pip install -e ".[gcp]"
 ```
 
 Run tests:

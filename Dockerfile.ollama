@@ -1,0 +1,28 @@
+# Dockerfile for Ollama service with embedded Qwen model
+FROM ollama/ollama:latest
+
+# Set environment variables
+ENV OLLAMA_HOST=0.0.0.0:8080
+ENV OLLAMA_MODELS=/models
+ENV OLLAMA_DEBUG=false
+ENV OLLAMA_KEEP_ALIVE=-1
+ENV OLLAMA_NUM_PARALLEL=4
+
+# Create models directory
+RUN mkdir -p /models
+
+# Pre-pull the models during build (this embeds them in the image)
+# Note: This requires running the ollama service temporarily
+RUN ollama serve & \
+    SERVER_PID=$! && \
+    sleep 5 && \
+    ollama pull qwen2.5:7b-instruct && \
+    ollama pull nomic-embed-text && \
+    kill $SERVER_PID && \
+    wait $SERVER_PID || true
+
+# Expose port
+EXPOSE 8080
+
+# Start ollama server
+CMD ["ollama", "serve"]

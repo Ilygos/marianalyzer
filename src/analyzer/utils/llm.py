@@ -6,12 +6,24 @@ from typing import Any, Optional
 import ollama
 
 from ..config import get_config
+from .gcp import get_authenticated_headers
 
 
 def get_llm_client():
-    """Get Ollama client."""
+    """Get Ollama client with optional Cloud Run authentication."""
     config = get_config()
-    return ollama.Client(host=config.ollama_host)
+
+    # Create base client
+    client = ollama.Client(host=config.ollama_host)
+
+    # Add authentication headers if using Cloud Run
+    if config.use_cloud_run_auth:
+        headers = get_authenticated_headers(config.ollama_host)
+        # Ollama client doesn't directly support custom headers,
+        # so we need to use httpx directly for authenticated requests
+        client._client.headers.update(headers)
+
+    return client
 
 
 def generate_completion(

@@ -9,7 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Config(BaseSettings):
     """Application configuration."""
-    
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -21,7 +21,17 @@ class Config(BaseSettings):
     db_path: Optional[Path] = None
     chroma_path: Optional[Path] = None
 
-    # Ollama settings
+    # GCP settings
+    gcp_project_id: Optional[str] = None
+    gcp_region: str = "us-central1"
+    gcs_bucket: Optional[str] = None  # GCS bucket for document storage
+    use_gcs: bool = False  # Enable GCS storage
+
+    # Cloud Run settings
+    ollama_service_url: Optional[str] = None  # Cloud Run Ollama service URL
+    use_cloud_run_auth: bool = False  # Enable IAM authentication for Ollama
+
+    # Ollama settings (local or Cloud Run)
     ollama_host: str = "http://localhost:11434"
     ollama_llm_model: str = "qwen2.5:7b-instruct"
     ollama_embedding_model: str = "nomic-embed-text"
@@ -55,15 +65,21 @@ class Config(BaseSettings):
     def __init__(self, **kwargs):
         """Initialize config and set up paths."""
         super().__init__(**kwargs)
-        
+
+        # If Ollama service URL is provided, use it instead of ollama_host
+        if self.ollama_service_url:
+            self.ollama_host = self.ollama_service_url
+            self.use_cloud_run_auth = True
+
         # Set default paths if not provided
         if self.db_path is None:
             self.db_path = self.data_dir / "analyzer.db"
         if self.chroma_path is None:
             self.chroma_path = self.data_dir / "chroma"
-        
-        # Ensure data directory exists
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+
+        # Ensure data directory exists (skip if using GCS)
+        if not self.use_gcs:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
 
 
 # Global config instance
